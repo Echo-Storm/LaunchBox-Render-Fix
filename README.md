@@ -1,104 +1,130 @@
-# LaunchBox GPU-to-CPU Fix
+# LaunchBox Render Fix
 
-A tiny LaunchBox/Big Box plugin that stops the launcher from sustaining heavy GPU load while
-you're just sitting in the game list, no videos, no screensaver, nothing playing. It moves that
-rendering cost onto the CPU instead, where it's cheap.
+A small LaunchBox/Big Box plugin that cuts idle GPU usage caused by WPF's UI rendering. It does
+this without disabling hardware acceleration, so nothing in LaunchBox stops working.
 
 ## The problem
 
-LaunchBox and Big Box are built on WPF (`net9.0-windows` as of LaunchBox 13.x). WPF hardware-
+LaunchBox and Big Box are built on WPF (`net9.0-windows` as of LaunchBox 13.x). WPF hardware
 accelerates its UI by default: every bit of box art, the platform wheel, hover highlights,
-background art, and scroll animations gets composited through the GPU, continuously, for as
-long as the window is visible, whether or not anything is actually changing on screen.
+background art, and scroll animations gets composited through the GPU continuously, for as long
+as the window is visible, whether or not anything is actually changing on screen.
 
-On a normal-sized library this is easy to miss. It became impossible to miss on a **~15,600-game
-library** (36 platforms, ~16k ROMs): LaunchBox was sitting at **50-55% GPU utilization** just
-idling in a game list, with video snaps/previews fully disabled and nothing playing. That's not
-a leak or malware, it's WPF's compositor doing exactly what it's designed to do. The difference
-is that a bigger library means a bigger/more complex visual tree to keep composited every frame,
-so the baseline cost is higher to begin with. Task Manager's Processes tab (GPU column) will show
-this as `LaunchBox.exe`/`BigBox.exe` sitting well above 0% at idle.
+On a normal sized library this is easy to miss. It became impossible to miss on a **~15,600 game
+library** (36 platforms, ~16k ROMs): LaunchBox was sitting at **53.6% GPU utilization** just
+idling in a game list, with video snaps/previews fully disabled and nothing playing. That's not a
+leak or malware, it's WPF's compositor doing exactly what it's designed to do. A bigger library
+means a bigger and more complex visual tree to keep composited every frame, so the baseline cost
+is higher to begin with. Task Manager's Processes tab (GPU column) will show this as
+`LaunchBox.exe`/`BigBox.exe` sitting well above 0% at idle.
 
 ![LaunchBox at 53.6% GPU, idling in the game list](images/gpu-before.png)
 
-This isn't a targeted performance problem (nothing feels slow), it's wasted GPU headroom and
-heat for an app that's supposed to be a static list you glance at before launching a game.
+This isn't a targeted performance problem, nothing feels slow. It's wasted GPU headroom and heat
+for an app that's supposed to be a static list you glance at before launching a game. On a system
+where the GPU is already under thermal pressure (small case, dusty heatsink, hot ambient
+temperature) this can be enough sustained extra load to trip a thermal warning that has nothing to
+do with LaunchBox itself, just extra heat that didn't need to be generated.
+
+## Who this is actually useful for
+
+If your library is small and LaunchBox's GPU usage already reads near 0% at idle, this plugin has
+nothing to fix for you. It matters if:
+
+- You have a large library (low thousands of games and up) and want the launcher to actually be
+  as lightweight as it looks
+- You want to leave LaunchBox open in the background (a second monitor, alt-tabbing back to it
+  between games) without it contesting GPU resources with whatever else is running
+- You're on a laptop or a system where extra sustained GPU load costs you fan noise, heat, or
+  battery life for literally no benefit
 
 ## What this plugin actually does
 
-It uses LaunchBox's official [Plugin SDK](https://pluginapi.launchbox-app.com/),
-specifically `ISystemEventsPlugin.OnEventRaised`, which fires once the plugin is loaded
-(`PluginInitialized`), and again once startup finishes (`LaunchBoxStartupCompleted` /
-`BigBoxStartupCompleted`). Plugins run **in-process**, so this is just two public WPF API calls
-made as early as possible in that process's lifetime:
+It uses LaunchBox's official [Plugin SDK](https://pluginapi.launchbox-app.com/), specifically
+`ISystemEventsPlugin.OnEventRaised`, which fires once the plugin is loaded (`PluginInitialized`)
+and again once startup finishes (`LaunchBoxStartupCompleted` / `BigBoxStartupCompleted`). Plugins
+run **in-process**, so this is two small, public WPF API calls made at the right moments in that
+process's lifetime. Full source is in `src/RenderFixPlugin.cs`, it's about 60 lines.
 
-1. **`RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly`**
-   Forces WPF's compositor to rasterize entirely on the CPU for this process, instead of
-   handing composited surfaces to the GPU. This is a real, documented WPF setting (used
-   elsewhere for remote desktop / GPU-passthrough compatibility), not a hack, not a registry
-   tweak, not touching drivers.
+1. **Cap the animation frame rate to 10fps**
+   (`Timeline.DesiredFrameRateProperty.OverrideMetadata`)
+   WPF ticks animations (hover glow, fades, scroll momentum) at roughly your monitor's refresh
+   rate by default. There's no functional reason a launcher needs that: nothing about hovering
+   over a box art tile needs to update 144 times a second. This has to run before any `Timeline`
+   object has been created anywhere in the process, since overriding a type's default metadata is
+   only allowed before that type has "locked in" its metadata. It's applied as early as possible
+   (`PluginInitialized`) and wrapped in a try/catch in case something already beat it to it.
 
-2. **`Timeline.DesiredFrameRateProperty` default overridden to 30fps**
-   WPF has exactly **one** render/composition thread per process, whether it's running hardware
-   or software rendering, there's no multi-core option for the software rasterizer. So once
-   step 1 moves all that work onto a single CPU core, capping how often animations (hover glow,
-   fades, scroll momentum) get re-ticked meaningfully cuts how much work that one core has to do
-   per second. Uncapped, WPF ticks animations roughly at your monitor's refresh rate, so this
-   matters more on high-refresh displays.
+2. **Set cheaper image scaling on the main window**
+   (`RenderOptions.SetBitmapScalingMode(mainWindow, BitmapScalingMode.LowQuality)`)
+   Every box art thumbnail gets resized from its source resolution down to tile size, and that
+   resizing uses a scaling shader. The default mode prioritizes quality; `LowQuality` is cheaper
+   per frame. `BitmapScalingMode` is an inherited property, so setting it once on the root window
+   (once `Application.Current.MainWindow` actually exists, at `LaunchBoxStartupCompleted` /
+   `BigBoxStartupCompleted`) cascades to every descendant that doesn't explicitly set its own
+   value, which in practice is everything. In testing, the visual difference was not noticeable.
 
-That's the entire fix. No settings are changed inside LaunchBox itself, nothing is written to
-disk beyond LaunchBox's own `Plugins` folder, and removing it is just deleting the DLL.
+That's the entire fix. Nothing inside LaunchBox itself is changed, nothing is written to disk
+beyond LaunchBox's own `Plugins` folder, and removing it is just deleting the DLL.
+
+### Why not just force software rendering?
+
+The obvious-looking alternative is `RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly`,
+which forces WPF to composite entirely on the CPU instead of the GPU. It works, GPU usage drops
+to 0%, but it was tested and rejected: LaunchBox's Overview/game details panel (almost certainly
+rendered through an embedded Chromium view via `CefSharp.OffScreen`, bridged into WPF with
+`D3DImage`) went blank and stopped scrolling entirely. `D3DImage` requires a real hardware D3D
+device to work at all, so it silently breaks under `SoftwareOnly`. That's not a screenshot
+slideshow or some optional flourish, it's the panel that shows the game description, so this
+approach was dropped. Confirmed by direct testing, not theoretical.
+
+An earlier version of this repo (`LaunchBox-GPU2CPU-Fix`) shipped that approach. This version
+replaces it entirely.
+
+## Results
+
+Tested on a ~15,600 game library, LaunchBox 13.27.0.0, RTX 4070 Ti Super, Windows 11:
+
+| | GPU | CPU |
+|---|---|---|
+| Before | 53.6% | 7.7% |
+| After | 8.7% (varies 3% to 18% run to run) | 4.3% |
+
+Both numbers went down from baseline. This isn't a GPU-to-CPU trade, it's just cheaper
+rendering. The GPU figure moves around some depending on what's visible in the list and
+what else is running, but it stays well under baseline every time. The app also feels more
+responsive navigating the game list, likely because there's less rendering work queued up
+per input.
+
+![LaunchBox at 8.7% GPU, 4.3% CPU with the plugin installed](images/gpu-after.png)
+
+One minor quirk: loading some media (box art fade-ins, transitions) can take an extra half
+second to a full second longer than before. Most likely explanation is the 10fps animation
+cap itself: a fade or transition that used to tick at your monitor's refresh rate now ticks
+at 10fps, so it takes a bit more wall-clock time to visually finish, even though nothing is
+actually loading slower underneath.
 
 ## What this does NOT affect
 
-- **Game/emulator performance.** `RenderOptions.ProcessRenderMode` is scoped to the single
-  process that sets it (`LaunchBox.exe` / `BigBox.exe`). When you launch a game, that's a
-  separate process (RetroArch, Dolphin, PCSX2, MAME, a standalone emulator, whatever) with its
-  own independent GPU context. This plugin never touches it.
+- **Game/emulator performance.** Everything here is scoped to the single process that runs it
+  (`LaunchBox.exe` / `BigBox.exe`). When you launch a game, that's a separate process (RetroArch,
+  Dolphin, PCSX2, MAME, a standalone emulator, whatever) with its own independent GPU context.
+  This plugin never touches it.
 - Anything system-wide, any other application, any driver setting.
-
-## Trade-offs (read before installing)
-
-- **CPU usage on LaunchBox/Big Box goes up.** In testing (15,600-game library, RTX 4070 Ti
-  Super): GPU dropped from ~53% to **0%**, CPU on the LaunchBox process settled around
-  **6-11%**. That's a good trade on any modern multi-core CPU, but it is a real trade, not a
-  free lunch.
-
-  ![LaunchBox at 0% GPU, 9.1% CPU with the plugin installed](images/gpu-after.png)
-- **Anything relying on hardware video interop can silently stop rendering.** Some WPF features
-  (e.g. `D3DImage`-based overlays, which some LaunchBox media features can use) require a real
-  hardware D3D device and will render blank under `SoftwareOnly`. If you rely on in-app video
-  previews/screenshot slideshows and notice them disappear, that's this trade-off, not a bug,
-  see the "only want half of this" section below.
-- Single-threaded software rasterization can feel very slightly less smooth during heavy
-  animation than full hardware compositing, even with the frame-rate cap. It should not be
-  noticeable during normal browsing.
-
-### Only want half of this?
-
-The two fixes are independent and either can be applied alone by commenting out the other line
-in `GpuToCpuFixPlugin.cs`:
-
-- Frame-rate cap only: keeps hardware rendering (and anything that depends on it) working,
-  cuts GPU load noticeably (~53% down to ~27% in testing) but not to zero, no CPU trade-off.
-- Software-only rendering only: the biggest GPU win (~53% down to 0%), highest CPU cost of the two,
-  and the one that can break hardware video interop.
-
-Combining both (the default in this repo) gave the best result in testing: 0% GPU with lower
-CPU cost than software-only rendering alone, since the frame cap reduces how much work the
-now-single-threaded compositor has to do.
+- Any in-app feature. The Overview panel, box art, screenshots, everything that worked before
+  still works. That was the whole point of dropping the software-rendering approach.
 
 ## Installing
 
-1. Build `src/LaunchBoxGpuToCpuFix.csproj` (see below), or grab `LaunchBoxGpuToCpuFix.dll` from
+1. Build `src/LaunchBoxRenderFix.csproj` (see below), or grab `LaunchBoxRenderFix.dll` from
    [Releases](../../releases).
 2. Copy the DLL into a new folder under your LaunchBox install, e.g.:
-   `LaunchBox\Plugins\LaunchBoxGpuToCpuFix\LaunchBoxGpuToCpuFix.dll`
+   `LaunchBox\Plugins\LaunchBoxRenderFix\LaunchBoxRenderFix.dll`
 3. Restart LaunchBox / Big Box.
 
 ## Uninstalling
 
-Delete the `LaunchBox\Plugins\LaunchBoxGpuToCpuFix` folder. That's the entire footprint.
+Delete the `LaunchBox\Plugins\LaunchBoxRenderFix` folder. That's the entire footprint.
 
 ## Building from source
 
@@ -109,11 +135,11 @@ cd src
 dotnet build -c Release
 ```
 
-Before building, update the `HintPath` in `LaunchBoxGpuToCpuFix.csproj` to point at your own
+Before building, update the `HintPath` in `LaunchBoxRenderFix.csproj` to point at your own
 `LaunchBox\Core\Unbroken.LaunchBox.Plugins.dll`. This repo doesn't redistribute Unbroken
-Software's SDK assembly, your build has to reference the copy that ships with your own
-LaunchBox install (it's marked `Private=false` so it isn't copied into your output, the
-plugin binds to the copy already loaded by the host process at runtime).
+Software's SDK assembly, your build has to reference the copy that ships with your own LaunchBox
+install (it's marked `Private=false` so it isn't copied into your output, the plugin binds to the
+copy already loaded by the host process at runtime).
 
 ## Tested against
 
@@ -122,11 +148,12 @@ plugin binds to the copy already loaded by the host process at runtime).
 - NVIDIA RTX 4070 Ti Super, Windows 11
 
 Should work on any LaunchBox/Big Box build on the net9.0 codebase, since it only touches public
-WPF APIs and one small, documented plugin interface. If it breaks on a different version, open
-an issue.
+WPF APIs and one small, documented plugin interface. If it breaks on a different version, open an
+issue.
 
 ## Why share this
 
-This isn't a bug in LaunchBox that needs reporting so much as an architectural default (WPF's
-GPU-compositor-always-on behavior) that the app never exposes a toggle for. If your library is
-big enough to notice, this fixes it without waiting on an upstream setting that may never come.
+This isn't a bug in LaunchBox that needs reporting, it's an architectural default (WPF's
+GPU-compositor-always-on behavior, uncapped animation frame rate, full-quality image scaling
+regardless of context) that the app never exposes a toggle for. If your library is big enough to
+notice, this fixes it without waiting on an upstream setting that may never come.

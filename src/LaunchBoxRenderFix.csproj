@@ -5,8 +5,8 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>LaunchBoxGpuToCpuFix</AssemblyName>
-    <RootNamespace>LaunchBoxGpuToCpuFix</RootNamespace>
+    <AssemblyName>LaunchBoxRenderFix</AssemblyName>
+    <RootNamespace>LaunchBoxRenderFix</RootNamespace>
     <EnableDynamicLoading>true</EnableDynamicLoading>
   </PropertyGroup>
 
