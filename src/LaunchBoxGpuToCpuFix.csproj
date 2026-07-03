@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LaunchBoxGpuToCpuFix</AssemblyName>
+    <RootNamespace>LaunchBoxGpuToCpuFix</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference your own LaunchBox install's copy of the plugin SDK.
+      Adjust the HintPath if LaunchBox is installed somewhere else.
+      Private=false so the SDK assembly is NOT copied into the output -
+      the plugin must bind to the copy already loaded by the host process.
+    -->
+    <Reference Include="Unbroken.LaunchBox.Plugins">
+      <HintPath>C:\LaunchBox\Core\Unbroken.LaunchBox.Plugins.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
