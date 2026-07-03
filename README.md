@@ -143,9 +143,18 @@ copy already loaded by the host process at runtime).
 
 ## Tested against
 
-- LaunchBox 13.27.0.0 (net9.0-windows / `Microsoft.WindowsDesktop.App` 9.0.16)
+- LaunchBox 13.27.0.0 (net9.0-windows / `Microsoft.WindowsDesktop.App` 9.0.16), regular desktop
+  mode, not Big Box
 - ~15,600 games across 36 platforms
 - NVIDIA RTX 4070 Ti Super, Windows 11
+
+**Big Box has not actually been tested.** The plugin handles `BigBoxStartupCompleted` the same
+way as `LaunchBoxStartupCompleted`, and there's no reason it shouldn't work identically, but
+nobody has watched it run in Big Box yet. Treat that as unverified until someone confirms it.
+
+This is an early, experimental release. It's only been run on one library, one GPU, one LaunchBox
+version. If you try it on a different setup, especially Big Box, a different library size, or a
+different GPU vendor, opening an issue with what you saw (working or not) is genuinely useful.
 
 Should work on any LaunchBox/Big Box build on the net9.0 codebase, since it only touches public
 WPF APIs and one small, documented plugin interface. If it breaks on a different version, open an
